@@ -1,0 +1,8 @@
+inherit_from: configs/learning_based/noise_small/ours.yaml
+data:
+  class: ['']
+  path: /path/to/in/dir
+train:
+  out_dir: /path/to/out/dir
+test:
+  model_file: https://s3.eu-central-1.amazonaws.com/avg-projects/shape_as_points/models/ours_noise_025.pt
