@@ -5,7 +5,7 @@
 
 \[[Project Website](https://sylviayuan-sy.github.io/larm-site/) | [arXiv Paper](https://www.arxiv.org/abs/2511.11563)\]
 
-![Teaser](docs/visuals/teaser.png)
+![Teaser](visuals/teaser.png)
 
 ## Table of Contents
 
