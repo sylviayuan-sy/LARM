@@ -3,7 +3,7 @@
 
 [Sylvia Yuan](https://sylviayuan-sy.github.io/), [Ruoxi Shi](https://rshi.top/), [Xinyue Wei](https://sarahweiii.github.io/), [Xiaoshuai Zhang](https://jetd.one/), [Hao Su](https://cseweb.ucsd.edu/~haosu/), [Minghua Liu](https://cseweb.ucsd.edu/~mil070/)
 
-\[[Project Website](https://sylviayuan-sy.github.io/larm-site/) | [arXiv Paper](https://arxiv.org/abs/0000.00000)\]
+\[[Project Website](https://sylviayuan-sy.github.io/larm-site/) | [arXiv Paper](https://www.arxiv.org/abs/2511.11563)\]
 
 ![Teaser](docs/visuals/teaser.png)
 
