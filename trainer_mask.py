@@ -91,7 +91,6 @@ def init_dataloaders(dataset_config, training_config):
         part_finetune=dataset_config["part_finetune"]
     )
 
-
     train_loader = tdata.DataLoader(
         train_set,
         batch_size=training_config["batch_size"],
@@ -107,8 +106,9 @@ def init_dataloaders(dataset_config, training_config):
         eval_set,
         batch_size=training_config["eval_batch_size"],
         shuffle=False,
-        sampler=tdata.DistributedSampler(eval_set),
+        sampler=tdata.DistributedSampler(eval_set, shuffle=False),
         num_workers=training_config["num_data_workers"],
+        drop_last=True,
         pin_memory=True,
         persistent_workers=True
     )
@@ -126,20 +126,26 @@ def log_to_wandb(loss_dict: dict, prefix: str = "train", extra_metrics: dict = N
     wandb.log(log_data)
 
 
+@torch.no_grad()
 def eval_loop(model, eval_loader, criterion, dataset_config, training_config, rank, local_rank):
     model.eval()
-    psnr_list = []
-    with torch.no_grad():
-        for data in eval_loader:
-            intrinsic = data["fxfycxcy"].cuda()
-            extrinsic_in = data["c2w"][:, :dataset_config["num_input_views"]].cuda()
-            extrinsic_out = data["c2w"][:, dataset_config["num_input_views"]:].cuda()
-            image = data["image"].cuda()
-            qpos_in = data["qpos"][:, :dataset_config["num_input_views"]].cuda() if dataset_config["part_finetune"] else None
-            qpos_out = data["qpos"][:, dataset_config["num_input_views"]:].cuda() if dataset_config["part_finetune"] else None
-            mask = data["mask"].cuda() if dataset_config["part_finetune"] else None
-            depth = data["depth"].cuda() if dataset_config["part_finetune"] else None
+    
+    psnr_sum = torch.tensor(0.0, device=f"cuda:{local_rank}")
+    psnr_count = torch.tensor(0, device=f"cuda:{local_rank}")
+    total_loss = torch.tensor(0.0, device=f"cuda:{local_rank}")
+    num_batches = torch.tensor(0, device=f"cuda:{local_rank}")
 
+    for data in eval_loader:
+        intrinsic = data["fxfycxcy"].cuda(non_blocking=True)
+        extrinsic_in = data["c2w"][:, :dataset_config["num_input_views"]].cuda(non_blocking=True)
+        extrinsic_out = data["c2w"][:, dataset_config["num_input_views"]:].cuda(non_blocking=True)
+        image = data["image"].cuda(non_blocking=True)
+        qpos_in = data["qpos"][:, :dataset_config["num_input_views"]].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+        qpos_out = data["qpos"][:, dataset_config["num_input_views"]:].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+        mask = data["mask"].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+        depth = data["depth"].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
             output = model(intrinsic, extrinsic_in, extrinsic_out, image, qpos_in=qpos_in, qpos_out=qpos_out)
             out_perm = output.permute(0, 1, 4, 2, 3)
 
@@ -148,11 +154,24 @@ def eval_loop(model, eval_loader, criterion, dataset_config, training_config, ra
             else:
                 loss_dict, _ = criterion(out_perm, image[:, dataset_config["num_input_views"]:], None, None, None, None)
 
-            psnr_list.append(psnr_compute(out_perm[:, :, :3], image[:, dataset_config["num_input_views"]:]))
+        batch_psnr = psnr_compute(out_perm[:, dataset_config["num_input_views"]:, :3].float(), image[:, dataset_config["num_input_views"]:].float())
+        psnr_sum += batch_psnr.sum()
+        psnr_count += batch_psnr.numel()
+        total_loss += loss_dict["loss"].float()
+        num_batches += 1
+
+    tdist.all_reduce(psnr_sum, op=tdist.ReduceOp.SUM)
+    tdist.all_reduce(psnr_count, op=tdist.ReduceOp.SUM)
+    tdist.all_reduce(total_loss, op=tdist.ReduceOp.SUM)
+    tdist.all_reduce(num_batches, op=tdist.ReduceOp.SUM)
 
     if rank == 0:
-        psnr_mean = torch.cat(psnr_list).mean().item()
-        log_to_wandb(loss_dict, prefix="val", extra_metrics={"psnr": psnr_mean})
+        psnr_mean = (psnr_sum / psnr_count).item()
+        avg_loss = (total_loss / num_batches).item()
+        log_to_wandb({"loss": avg_loss}, prefix="val", extra_metrics={"psnr": psnr_mean})
+
+    tdist.barrier()
+    model.train()
 
 
 def run(config, rank, local_rank):
@@ -188,14 +207,14 @@ def run(config, rank, local_rank):
             train_iter = iter(train_loader)
             data = next(train_iter)
 
-        intrinsic = data["fxfycxcy"].cuda()
-        extrinsic_in = data["c2w"][:, :dataset_config["num_input_views"]].cuda()
-        extrinsic_out = data["c2w"][:, dataset_config["num_input_views"]:].cuda()
-        image = data["image"].cuda()
-        qpos_in = data["qpos"][:, :dataset_config["num_input_views"]].cuda() if dataset_config["part_finetune"] else None
-        qpos_out = data["qpos"][:, dataset_config["num_input_views"]:].cuda() if dataset_config["part_finetune"] else None
-        mask = data["mask"].cuda() if dataset_config["part_finetune"] else None
-        depth = data["depth"].cuda() if dataset_config["part_finetune"] else None
+        intrinsic = data["fxfycxcy"].cuda(non_blocking=True)
+        extrinsic_in = data["c2w"][:, :dataset_config["num_input_views"]].cuda(non_blocking=True)
+        extrinsic_out = data["c2w"][:, dataset_config["num_input_views"]:].cuda(non_blocking=True)
+        image = data["image"].cuda(non_blocking=True)
+        qpos_in = data["qpos"][:, :dataset_config["num_input_views"]].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+        qpos_out = data["qpos"][:, dataset_config["num_input_views"]:].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+        mask = data["mask"].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
+        depth = data["depth"].cuda(non_blocking=True) if dataset_config["part_finetune"] else None
 
         if mask is not None:
             mask[mask >= 0.5] = 1.0
@@ -226,13 +245,12 @@ def run(config, rank, local_rank):
             }
             log_to_wandb(loss_dict, prefix="train", extra_metrics=extra)
 
-        if rank == 0 and training_config.get("eval_interval") and num_iter % training_config["eval_interval"] == 0 and num_iter > 0:
+        if training_config.get("eval_interval") and num_iter % training_config["eval_interval"] == 0 and num_iter > 0:
             eval_loop(model, eval_loader, criterion, dataset_config, training_config, rank, local_rank)
 
         num_iter += 1
 
-    if rank == 0:
-        eval_loop(model, eval_loader, criterion, dataset_config, training_config, rank, local_rank)
+    eval_loop(model, eval_loader, criterion, dataset_config, training_config, rank, local_rank)
 
 
 def main(config, args):
